@@ -47,7 +47,7 @@ max_pdf_pages = 300
 ## 开发
 
 如需本地测试，确保 `config.toml` 中 `jm.jm_data_dir` 指向可写目录，并已安装上面列出的 python 库。
-JM Plugin
+
 ==========
 
 功能：通过 `jmcomic` 下载指定 id 的图集，并根据配置（默认 img2pdf）生成 PDF 或图片目录后，上报到 QQ 群文件或客户端文件。
@@ -57,3 +57,5 @@ JM Plugin
 /jm 12345
 
 将会触发下载流程并在完成后上传文件。
+
+希望有大佬写个完美的
