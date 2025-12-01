@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "name": "JM 下载插件 (jm_plugin)",
+  "version": "0.1.0",
+  "description": "通过 jmcomic 下载指定 id 的图集并把输出上传到群/客户端文件",
+  "author": {
+    "name": "yumemi1",
+    "url": "https://github.com/yumemi1"
+  },
+  "license": "MIT",
+  "host_application": { "min_version": "0.8.0" },
+  "plugin_info": { "is_built_in": false, "plugin_type": "jm-downloader", "entry": "plugin.py" }
+}

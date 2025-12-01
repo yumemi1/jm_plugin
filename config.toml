@@ -1,0 +1,15 @@
+# jm_plugin - 自动生成的配置文件
+# 通过 jmcomic 下载指定 id 的图集并把输出上传到群/客户端文件
+
+[jm]
+
+# JM 漫画下载目录，为空默认 plugins/jm_plugin/data
+jm_data_dir = ""
+
+# Napcat 机器人框架的 API 基础 URL
+napcat_base_url = "http://127.0.0.1:3000"
+
+# PDF 最大页数限制
+max_pdf_pages = 300
+
+
