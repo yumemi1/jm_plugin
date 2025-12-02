@@ -1,4 +1,15 @@
 # plugin.py
+"""
+JM 本子下载插件
+
+概述：
+- 通过命令下载指定 ID 的 JMComic 本子
+- 支持多章节本子的单章节下载（超出范围默认下载第 1 章并提示）
+- 自动合成 PDF 并上传到 QQ 群或私聊（Napcat）
+
+作者：yumemi1
+项目：https://github.com/yumemi1/jm_plugin
+"""
 import asyncio
 import os
 import re
@@ -19,58 +30,58 @@ from src.plugin_system import (
 from src.config.config import global_config
 
 
-# ========================
-# 工具：清理文件名
-# ========================
+
+# =============================================================================
+# 工具函数
+# =============================================================================
+
 def sanitize_filename(name: str) -> str:
-    """清理文件名中的非法字符，使其适合作为文件系统路径。
-    
+    """将文件名中的非法字符替换为下划线。
+
+    替换字符包括：\ / : * ? " < > | 以及换行符。
+
     Args:
         name: 原始文件名
-        
+
     Returns:
-        清理后的文件名（将非法字符替换为下划线）
+        处理后的安全文件名
     """
     return re.sub(r'[\\/:*?"<>|\r\n]+', '_', name).strip()
 
 
-# ========================
-# 工具：图片合并 PDF
-# ========================
+
 def images_to_pdf_sync(image_paths: List[Path], output_pdf_path: str) -> str:
-    """将多张图片合并为单个 PDF 文件。
-    
+    """按顺序将图片合并为单个 PDF。
+
+    - 所有图片统一转换为 RGB 模式。
+    - 自动创建输出目录（若不存在）。
+
     Args:
         image_paths: 图片文件路径列表
         output_pdf_path: 输出 PDF 文件路径
-        
+
     Returns:
         生成的 PDF 文件路径
-        
+
     Raises:
         ValueError: 当没有图片提供时
     """
     if not image_paths:
         raise ValueError("没有图片可合并")
 
-    # 打开并转换所有图片为 RGB 模式
-    images = []
+    images: List[Image.Image] = []
+    # 使用上下文管理器确保文件句柄及时释放
     for img_path in image_paths:
-        img = Image.open(img_path)
-        # 确保图片为 RGB 模式（某些格式可能是 RGBA 或灰度）
-        if img.mode != "RGB":
-            img = img.convert("RGB")
+        with Image.open(img_path) as im:
+            img = im.convert("RGB") if im.mode != "RGB" else im.copy()
         images.append(img)
 
-    # 创建输出目录
     os.makedirs(os.path.dirname(output_pdf_path), exist_ok=True)
 
-    # 合并图片：第一张图片为主，其余为附加
     first_image = images[0]
     remaining_images = images[1:]
     first_image.save(output_pdf_path, save_all=True, append_images=remaining_images)
 
-    # 关闭所有图片对象释放内存
     for img in images:
         try:
             img.close()
@@ -80,9 +91,11 @@ def images_to_pdf_sync(image_paths: List[Path], output_pdf_path: str) -> str:
     return output_pdf_path
 
 
-# ========================
-# Napcat 上传 PDF
-# ========================
+
+# =============================================================================
+# Napcat API 交互
+# =============================================================================
+
 async def upload_pdf_via_napcat(
     pdf_path: str,
     filename: str,
@@ -91,24 +104,23 @@ async def upload_pdf_via_napcat(
     napcat_base: str,
     timeout: int = 60,
 ) -> Tuple[bool, str]:
-    """通过 Napcat 机器人框架上传 PDF 文件到群聊或私聊。
-    
-    尝试两种上传方式：
-    1. JSON 方式：直接发送文件路径
-    2. FormData 方式：上传文件二进制数据
-    
+    """通过 Napcat API 上传 PDF 文件。
+
+    尝试两种方式上传：
+    1) JSON：传本地文件路径；失败则回退
+    2) FormData：上传二进制内容
+
     Args:
-        pdf_path: PDF 文件的本地路径
-        filename: 文件名
-        scope: 上传范围，"group" 为群聊，其他为私聊
-        target_id: 目标 ID（群号或用户 ID）
+        pdf_path: PDF 文件本地路径
+        filename: 上传时的文件名
+        scope: "group" 群聊 或 "private" 私聊
+        target_id: 群号或用户 ID
         napcat_base: Napcat API 基础 URL
-        timeout: 请求超时时间（秒）
-        
+        timeout: 请求总超时（秒）
+
     Returns:
-        (成功标志, 响应消息)
+        (是否成功, 响应文本或错误信息)
     """
-    # 根据范围选择对应的 API 端点和参数
     if scope == "group":
         url = f"{napcat_base}/upload_group_file"
         json_payload = {"group_id": target_id, "file": pdf_path, "name": filename}
@@ -117,7 +129,7 @@ async def upload_pdf_via_napcat(
         json_payload = {"user_id": target_id, "file": pdf_path, "name": filename}
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as sess:
-        # 方式 1：尝试用 JSON 方式发送文件路径
+        # 方式 1：JSON 方式（直接传递文件路径）
         try:
             async with sess.post(url, json=json_payload) as response:
                 response_text = await response.text()
@@ -128,9 +140,9 @@ async def upload_pdf_via_napcat(
                     except Exception:
                         return True, response_text
         except Exception:
-            pass  # JSON 方式失败，尝试 FormData 方式
-
-        # 方式 2：使用 FormData 上传文件二进制数据
+            pass  # 静默失败，继续尝试方式 2
+        
+        # 方式 2：FormData 方式（上传文件二进制）
         form = aiohttp.FormData()
         if scope == "group":
             form.add_field("group_id", str(target_id))
@@ -138,7 +150,6 @@ async def upload_pdf_via_napcat(
             form.add_field("user_id", str(target_id))
 
         form.add_field("name", filename)
-        # 打开并上传文件
         file_handle = open(pdf_path, "rb")
         form.add_field("file", file_handle, filename=filename, content_type="application/pdf")
 
@@ -156,21 +167,27 @@ async def upload_pdf_via_napcat(
             file_handle.close()
 
 
-# ========================
-# 下载 JM 漫画
-# ========================
+
+# =============================================================================
+# JMComic 下载功能
+# =============================================================================
+
 async def check_album_chapters(
     album_id: str,
     output_dir: Optional[str] = None,
 ) -> Tuple[bool, Optional[int], Optional[str]]:
-    """检查漫画专辑的章节数。
+    """检查本子的章节数量。
+
+    初始化 jmcomic 配置后查询指定 ID 的章节信息。
     
     Args:
-        album_id: 漫画专辑 ID
+        album_id: 本子 ID
         output_dir: 自定义输出目录，为空时使用默认目录
-        
+    
     Returns:
-        (成功标志, 章节数或None, 错误信息或None)
+        元组 (是否成功, 章节数量, 错误信息)
+        - 成功时返回 (True, 章节数, None)
+        - 失败时返回 (False, None, 错误信息)
     """
     try:
         import jmcomic
@@ -178,7 +195,6 @@ async def check_album_chapters(
         return False, None, f"jmcomic 导入失败: {e}"
 
     try:
-        # 创建临时配置
         if output_dir is None:
             output_dir = os.path.join(os.getcwd(), "data")
         
@@ -191,7 +207,7 @@ async def check_album_chapters(
         
         option = jmcomic.create_option_by_file(option_file)
         
-        # 在线程池中获取专辑信息
+        # 使用线程池避免阻塞异步事件循环
         def get_album_info():
             client = option.new_jm_client()
             album = client.get_album_detail(album_id)
@@ -208,19 +224,25 @@ async def async_download_album(
     output_dir: Optional[str] = None,
     plugin_dir: Optional[str] = None,
     only_first_chapter: bool = False,
+    chapter_index: Optional[int] = None,
 ) -> Tuple[bool, Optional[str], Optional[int]]:
-    """异步下载 JM 漫画专辑并返回图片目录路径。
+    """异步下载 JMComic 本子。
+    
+    支持三种下载模式：
+    1. 下载整本（only_first_chapter=False 且未指定 chapter_index）
+    2. 仅下载第一章（only_first_chapter=True）
+    3. 下载指定章节（指定 chapter_index，1-based）
     
     Args:
-        album_id: 漫画专辑 ID
+        album_id: 本子 ID
         output_dir: 自定义输出目录，为空时使用默认目录
         plugin_dir: 插件目录，用于确定默认的 data 目录位置
         only_first_chapter: 是否仅下载第一章
-        
+        chapter_index: 指定章节号（从 1 开始），优先级高于 only_first_chapter
+    
     Returns:
-        (成功标志, 图片目录路径或错误信息, 总章节数或None)
+        (是否成功, 图片目录或错误信息, 总章节数或 None)
     """
-    # 动态导入 jmcomic 库
     try:
         import jmcomic
     except Exception as e:
@@ -236,58 +258,66 @@ async def async_download_album(
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    # 创建 jmcomic 配置文件
     option_file = os.path.join(output_dir, "option.yml")
     with open(option_file, "w", encoding="utf-8") as config_file:
         config_file.write(f"dir_rule:\n  base_dir: {output_dir}\n")
 
-    # 加载并解析配置
     try:
         option = jmcomic.create_option_by_file(option_file)
     except Exception as e:
         return False, f"jmcomic 配置错误: {e}", None
-
-    # 如果需要仅下载第一章，需要获取第一章的 photo_id
+    
+    # 解析并确定要下载的章节
     photo_id_to_download = None
     total_chapters = None
+    download_chapter_index = None
     
-    if only_first_chapter:
+    if chapter_index is not None or only_first_chapter:
         try:
-            def get_first_chapter_info():
+            def get_album_chapters():
                 client = option.new_jm_client()
                 album = client.get_album_detail(album_id)
                 total = len(album)
-                if total > 0:
-                    first_photo = list(album)[0]
-                    return first_photo.photo_id, total
-                return None, total
+                return list(album), total
             
-            photo_id_to_download, total_chapters = await asyncio.to_thread(get_first_chapter_info)
+            chapters_list, total_chapters = await asyncio.to_thread(get_album_chapters)
             
-            if photo_id_to_download is None:
-                return False, "无法获取第一章信息", None
+            if total_chapters == 0:
+                return False, "本子无章节信息", None
+            
+            if chapter_index is not None:
+                # 用户指定了章节号（1-based），转换为内部索引（0-based）
+                idx = chapter_index - 1
+                if idx < 0 or idx >= total_chapters:
+                    download_chapter_index = 0 if only_first_chapter else None
+                else:
+                    download_chapter_index = idx
+            else:
+                download_chapter_index = 0
+            
+            if download_chapter_index is not None:
+                photo_id_to_download = chapters_list[download_chapter_index].photo_id
+                if photo_id_to_download is None:
+                    return False, "无法获取指定章节信息", None
         except Exception as e:
             return False, f"获取章节信息失败: {e}", None
 
-    # 在线程池中执行下载（避免阻塞事件循环）
     try:
-        if only_first_chapter and photo_id_to_download:
+        if download_chapter_index is not None:
             await asyncio.to_thread(jmcomic.download_photo, photo_id_to_download, option)
         else:
             await asyncio.to_thread(jmcomic.download_album, album_id, option)
     except Exception as e:
         return False, f"下载失败: {e}", None
-
-    # 查找最新下载的图片目录
-    # jmcomic 会在 output_dir 下创建多个子目录，需要找到包含图片的最新目录
+    
+    # 定位下载的图片目录
+    # jmcomic 会在输出目录下创建子目录，需要找到包含图片的目录
     subdirs = [d for d in Path(output_dir).iterdir() if d.is_dir()]
     if not subdirs:
         return False, "未找到下载目录", None
-
-    # 按修改时间排序，最新的目录排在前面
+    
     subdirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
-
-    # 遍历目录找到包含图片的最新目录
+    
     target_dir = None
     image_extensions = [".jpg", ".jpeg", ".png", ".webp"]
     for subdir in subdirs:
@@ -304,44 +334,67 @@ async def async_download_album(
     return True, target_dir, total_chapters
 
 
-# ========================
-# JMCommand
-# ========================
+
+# =============================================================================
+# 命令处理
+# =============================================================================
+
 class JMCommand(BaseCommand):
-    """JM 漫画下载命令类。
-    
-    处理 /jm <album_id> 命令：
-    1. 下载指定专辑的漫画图片
-    2. 将所有图片合并为 PDF
-    3. 通过 Napcat 上传 PDF 到群聊或私聊
-    4. 清理临时文件
+    """JM 本子下载命令处理器。
+
+    命令格式：
+    - /jm <ID>        下载指定 ID 的本子（多章节默认第 1 章）
+    - /jm <ID> <章节> 下载指定 ID 本子的指定章节
+
+    执行流程：解析参数 → 检查章节 → 决策下载 → 合成 PDF → 上传 → 清理。
     """
     
     command_name = "jm"
-    command_description = "下载 JM 漫画为 PDF 并上传"
-    command_pattern = r"^/jm\s*(?P<id>\S+)$"
+    command_description = "下载 JM 本子为 PDF 并上传。用法：/jm ID 或 /jm ID 章节数"
+    command_pattern = r"^/jm(?:\s+(?P<args>.+))?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], bool]:
-        """执行 /jm 命令：下载漫画、转换为 PDF、上传到群聊或私聊。
+        """执行命令主逻辑。
         
-        如果是多章节本子，仅下载和输出第一章。
+        下载策略：
+        - 单章节漫画：下载全部，忽略章节参数
+        - 多章节漫画 + 无章节参数：下载第一章
+        - 多章节漫画 + 有效章节参数：下载指定章节
+        - 多章节漫画 + 无效章节参数：下载第一章并提示
+        
+        Returns:
+            元组 (是否继续执行, 执行结果消息, 是否成功)
         """
-        # 提取命令参数
-        album_id = self.matched_groups.get("id")
-        if not album_id:
-            await self.send_text("用法：/jm 123456")
+        args_str = ""
+        if self.matched_groups and "args" in self.matched_groups:
+            args_str = self.matched_groups["args"] or ""
+        args_str = args_str.strip()
+        
+        if not args_str:
+            await self.send_text("用法：/jm ID 或 /jm ID 章节数")
             return True, None, True
+        
+        parts = args_str.split()
+        album_id = parts[0]
+        chapter_num = None
+        
+        if len(parts) > 1:
+            try:
+                chapter_num = int(parts[1])
+                if chapter_num <= 0:
+                    await self.send_text("章节数必须为正整数")
+                    return True, None, True
+            except ValueError:
+                await self.send_text("章节数必须为正整数")
+                return True, None, True
 
-        # 通知用户开始下载
         await self.send_text("开始下载")
 
-        # 获取配置参数
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         jm_data_dir = self.get_config("jm.jm_data_dir","")
         napcat_base_url = self.get_config("jm.napcat_base_url")
         max_pdf_pages = self.get_config("jm.max_pdf_pages")
 
-        # 第一步：检查章节数
         success, chapter_count, error_msg = await check_album_chapters(
             album_id,
             output_dir=jm_data_dir or None,
@@ -351,28 +404,41 @@ class JMCommand(BaseCommand):
             await self.send_text(f"检查章节信息失败: {error_msg}")
             return True, error_msg, True
 
-        # 根据章节数决定是否只下载第一章
-        only_first_chapter = chapter_count > 1
-        if only_first_chapter:
-            await self.send_text(f"检测到多章节本子({chapter_count}话)，仅下载第一章")
+    # 决定下载策略
+        only_first_chapter = False
+        use_chapter_index = None
+        
+        if chapter_count > 1:
+            if chapter_num is not None:
+                if chapter_num > chapter_count:
+                    only_first_chapter = True
+                    await self.send_text(f"本子仅有{chapter_count}章，忽略无效的章节数，下载第一章")
+                else:
+                    use_chapter_index = chapter_num
+                    await self.send_text(f"检测到多章节本子({chapter_count}话)，下载第{chapter_num}章")
+            else:
+                only_first_chapter = True
+                await self.send_text(f"检测到多章节本子({chapter_count}话)，仅下载第一章")
+        else:
+            if chapter_num is not None:
+                await self.send_text("单章节本子，忽略章节数参数")
 
-        # 第二步：下载漫画
         success, album_dir, total_chapters = await async_download_album(
             album_id,
             output_dir=jm_data_dir or None,
             plugin_dir=plugin_dir,
             only_first_chapter=only_first_chapter,
+            chapter_index=use_chapter_index,
         )
 
         if not success:
             await self.send_text("下载失败")
             return True, album_dir, True
 
-        # 发送下载完成的漫画名称
         album_name = os.path.basename(album_dir)
         await self.send_text(album_name)
 
-        # 第三步：收集所有支持的图片文件
+    # 收集图片文件
         supported_extensions = {".jpg", ".jpeg", ".png", ".webp"}
         img_paths = sorted(
             [p for p in Path(album_dir).rglob("*") if p.suffix.lower() in supported_extensions],
@@ -383,14 +449,15 @@ class JMCommand(BaseCommand):
             await self.send_text("未找到图片")
             return True, None, True
 
-        # 检查页数是否超过限制
         if len(img_paths) > max_pdf_pages:
             await self.send_text(f"页数超过 {max_pdf_pages}，不生成 PDF")
             return True, None, True
 
-        # 第四步：生成 PDF 文件
+    # 生成 PDF
         safe_name = sanitize_filename(album_id)
-        if only_first_chapter:
+        if use_chapter_index is not None:
+            safe_name = f"{safe_name}_{use_chapter_index:02d}"
+        elif only_first_chapter:
             safe_name = f"{safe_name}_01"
         pdf_dir = os.path.join(plugin_dir, "tmp_pdf")
         os.makedirs(pdf_dir, exist_ok=True)
@@ -402,7 +469,7 @@ class JMCommand(BaseCommand):
             await self.send_text("PDF 生成失败")
             return True, str(e), True
 
-        # 第五步：确定上传目标（群聊或私聊）
+    # 确定上传目标
         is_group = False
         group_id = None
         user_id = None
@@ -417,7 +484,6 @@ class JMCommand(BaseCommand):
         except Exception:
             pass
 
-        # 第六步：上传 PDF 到 Napcat
         if is_group:
             ok, msg = await upload_pdf_via_napcat(
                 pdf_path, f"{safe_name}.pdf", "group", group_id, napcat_base_url
@@ -434,7 +500,6 @@ class JMCommand(BaseCommand):
             await self.send_text("上传失败")
             return True, msg, True
 
-        # 清理临时 PDF 文件
         try:
             os.remove(pdf_path)
         except Exception:
@@ -443,22 +508,29 @@ class JMCommand(BaseCommand):
         return True, "完成", True
 
 
-# ========================
-# 插件主体
-# ========================
+
+# =============================================================================
+# 插件注册
+# =============================================================================
+
 @register_plugin
 class JMPlugin(BasePlugin):
-    """JM 漫画下载插件。
+    """JM 漫画下载插件主类。
     
-    功能：
-    - 使用 /jm <专辑ID> 命令下载 JM 漫画
-    - 自动转换为 PDF 格式
-    - 上传到群聊或私聊
+    本插件为 MaiBot 提供 JMComic 图集下载功能。
+    通过集成 jmcomic 库实现图集爬取，使用 Pillow 进行 PDF 转换，
+    最后通过 Napcat API 将文件上传到 QQ。
     
-    依赖：
-    - jmcomic: 漫画下载库
-    - pillow: 图片处理库
-    - aiohttp: 异步 HTTP 客户端
+    主要特性：
+    - 支持单章节和多章节漫画
+    - 可选择性下载指定章节
+    - 自动 PDF 转换和页数限制
+    - 支持群聊和私聊上传
+    
+    Python 依赖：
+    - jmcomic: JMComic 爬虫库
+    - pillow: 图片处理和 PDF 生成
+    - aiohttp: HTTP 客户端
     """
     
     plugin_name: str = "jm_plugin"
@@ -469,7 +541,6 @@ class JMPlugin(BasePlugin):
 
     config_file_name: str = "config.toml"
     
-    # 配置文件架构定义
     config_schema = {
         "jm": {
             "jm_data_dir": ConfigField(
@@ -491,5 +562,5 @@ class JMPlugin(BasePlugin):
     }
 
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
-        """返回插件包含的所有命令组件。"""
+        """返回插件提供的命令组件列表。"""
         return [(JMCommand.get_command_info(), JMCommand)]
