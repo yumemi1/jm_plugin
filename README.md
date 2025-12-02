@@ -85,11 +85,9 @@ max_pdf_pages = 300                     # PDF最大页数
 
 ## 📸 效果演示（示例截图）
 
-```markdown
 ![单章节本子下载](docs/screenshots/1.png)
 ![多章节本子下载](docs/screenshots/2.png)
 ![多章节本子下载](docs/screenshots/3.png)
-```
 
 ## ⚠️ 注意事项
 
